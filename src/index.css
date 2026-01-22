@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 强制全屏深色 */
+body {
+  @apply bg-background text-text antialiased;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden; /* 防止手机上下回弹 */
+}
