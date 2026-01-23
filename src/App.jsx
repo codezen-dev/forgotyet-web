@@ -1,100 +1,308 @@
-import { useState } from 'react'
-import axios from 'axios'
-import { Send, CheckCircle2, Loader2 } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
 function App() {
-  const [content, setContent] = useState('')
-  // 状态机: 'idle' (空闲) | 'submitting' (提交中) | 'success' (成功展示)
-  const [status, setStatus] = useState('idle') 
+  // ================= 1. 状态管理 =================
+  // 鉴权状态
+  const [token, setToken] = useState(localStorage.getItem('fy_token') || '')
+  const [authStep, setAuthStep] = useState(token ? 'LOGGED_IN' : 'EMAIL') // EMAIL, CODE, LOGGED_IN
+  const [emailValue, setEmailValue] = useState(localStorage.getItem('fy_email') || '')
+  const [codeValue, setCodeValue] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
 
-  const handleSubmit = async () => {
-    if (!content.trim()) return
-    
-    setStatus('submitting')
-    
+  // 业务状态
+  const [inputValue, setInputValue] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [feedbackMsg, setFeedbackMsg] = useState('')
+
+  // 语音状态
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+  const mediaRecorderRef = useRef(null)
+  const timerRef = useRef(null)
+  const audioChunksRef = useRef([])
+
+  // ================= 2. 鉴权业务 (OTP登录) =================
+  const handleSendCode = async () => {
+    if (!emailValue) return
+    setAuthLoading(true)
     try {
-      const baseUrl = import.meta.env.VITE_API_BASE_URL;
-      await axios.post(`${baseUrl}/events/add`, { content })
-      
-      setStatus('success')
-      
-      // 2秒后重置，回到输入状态，产生一种“事情已经过去了”的感觉
-      setTimeout(() => {
-        setContent('')
-        setStatus('idle')
-      }, 2500)
-      
-    } catch (error) {
-      alert('抱歉，暂时没记住。请重试。') // MVP 简单错误处理
-      setStatus('idle')
+      const res = await fetch(`${API_BASE_URL}/api/auth/send-code?email=${encodeURIComponent(emailValue)}`, { method: 'POST' })
+      if (res.ok) {
+        setAuthStep('CODE')
+        localStorage.setItem('fy_email', emailValue)
+      } else {
+        alert('发送失败，请稍后重试')
+      }
+    } catch (err) {
+      alert('网络错误')
+    } finally {
+      setAuthLoading(false)
     }
   }
 
-  // 成功页面 (极其克制)
-  if (status === 'success') {
+  const handleLogin = async () => {
+    if (!codeValue) return
+    setAuthLoading(true)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/login?email=${encodeURIComponent(emailValue)}&code=${encodeURIComponent(codeValue)}`, { method: 'POST' })
+      const data = await res.json()
+      if (data.code === 0) {
+        const jwt = data.data
+        setToken(jwt)
+        localStorage.setItem('fy_token', jwt)
+        setAuthStep('LOGGED_IN')
+      } else {
+        alert(data.msg || '验证码错误')
+      }
+    } catch (err) {
+      alert('登录失败')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  // ================= 3. 语音引擎 (录音与转录) =================
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaRecorderRef.current = new MediaRecorder(stream)
+      audioChunksRef.current = []
+
+      mediaRecorderRef.current.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data)
+      }
+
+      mediaRecorderRef.current.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
+        await transcribeAudio(audioBlob)
+        stream.getTracks().forEach(track => track.stop()) // 释放麦克风
+      }
+
+      mediaRecorderRef.current.start()
+      setIsRecording(true)
+      setRecordingTime(0)
+
+      // 60秒硬性截断保护（防止恶意占用服务器）
+      timerRef.current = setInterval(() => {
+        setRecordingTime(prev => {
+          if (prev >= 60) {
+            stopRecording()
+            return 60
+          }
+          return prev + 1
+        })
+      }, 1000)
+
+    } catch (err) {
+      alert('无法访问麦克风，请检查浏览器权限。')
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      clearInterval(timerRef.current)
+    }
+  }
+
+  const transcribeAudio = async (blob) => {
+    setIsSubmitting(true)
+    setFeedbackMsg('🎙️ 正在将语音转化为文字...')
+    
+    const formData = new FormData()
+    formData.append('file', blob, 'voice.webm')
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/voice/transcribe`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      })
+      const data = await res.json()
+      if (data.code === 0) {
+        const text = data.data
+        setInputValue(text)
+        // 自动提交事件
+        await submitEvent(text)
+      } else {
+        alert(data.msg)
+        setIsSubmitting(false)
+        setFeedbackMsg('')
+      }
+    } catch (err) {
+      alert('语音识别失败')
+      setIsSubmitting(false)
+      setFeedbackMsg('')
+    }
+  }
+
+  // ================= 4. 核心业务 (提交事件) =================
+  const submitEvent = async (textToSubmit) => {
+    const finalContent = textToSubmit || inputValue
+    if (!finalContent.trim()) return
+
+    setIsSubmitting(true)
+    setFeedbackMsg('✨ 正在为您生成专属时间胶囊...')
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/event/add`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          rawInput: finalContent
+          // 注意：不需要传邮箱了，后端会从 Token 里取
+        })
+      })
+
+      const data = await res.json()
+      if (data.code === 0) {
+        setFeedbackMsg('✅ 已收录。不用再挂念它，去享受生活吧。')
+        setInputValue('')
+        setTimeout(() => setFeedbackMsg(''), 4000)
+      } else {
+        alert(data.msg)
+      }
+    } catch (err) {
+      alert('网络异常，请重试')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  // ================= 5. 渲染视图 =================
+  
+  // 视图A：未登录状态 (极简鉴权)
+  if (authStep !== 'LOGGED_IN') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-6 animate-fade-in">
-        <CheckCircle2 className="w-16 h-16 text-primary mb-6" />
-        <h2 className="text-2xl font-light text-text mb-2">已记住。</h2>
-        <p className="text-muted text-center">
-          下周三前，我会替你记着。<br/>
-          你可以忘掉它了。
-        </p>
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center p-4 selection:bg-stone-200">
+        <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-sm border border-stone-100 flex flex-col gap-6">
+          <div className="text-center">
+            <h1 className="text-2xl font-medium text-stone-800 tracking-tight">ForgotYet</h1>
+            <p className="text-sm text-stone-400 mt-1">给未来的自己留个言</p>
+          </div>
+
+          {authStep === 'EMAIL' ? (
+            <>
+              <input
+                type="email"
+                placeholder="输入你的邮箱"
+                className="w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-stone-400 transition-all placeholder:text-stone-300"
+                value={emailValue}
+                onChange={(e) => setEmailValue(e.target.value)}
+              />
+              <button
+                onClick={handleSendCode}
+                disabled={authLoading || !emailValue}
+                className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50"
+              >
+                {authLoading ? '发送中...' : '发送验证码'}
+              </button>
+            </>
+          ) : (
+            <>
+              <input
+                type="text"
+                placeholder="输入 4 位验证码"
+                className="w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-stone-400 transition-all text-center tracking-widest"
+                value={codeValue}
+                onChange={(e) => setCodeValue(e.target.value)}
+              />
+              <button
+                onClick={handleLogin}
+                disabled={authLoading || !codeValue}
+                className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50"
+              >
+                {authLoading ? '登录中...' : '进入'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
     )
   }
 
-  // 输入页面
+  // 视图B：已登录主界面
   return (
-    <div className="min-h-screen flex flex-col px-6 py-10 relative">
-      
-      {/* 顶部简单的 Logo */}
-      <div className="flex items-center justify-center mb-12 opacity-50">
-        <span className="text-sm tracking-[0.2em] text-muted uppercase">ForgotYet</span>
-      </div>
-
-      {/* 核心输入区 */}
-      <div className="flex-1 flex flex-col justify-center max-w-md mx-auto w-full">
-        <label className="text-muted text-sm mb-4 block pl-1">告诉我不久的将来要做什么...</label>
+    <div className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-4 selection:bg-stone-200">
+      <div className="w-full max-w-xl bg-white p-8 rounded-3xl shadow-sm border border-stone-100 flex flex-col gap-6 relative overflow-hidden transition-all duration-300">
         
-        <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          placeholder="例如：下周三要给车做保养，或者提醒我明晚给妈妈打个电话。"
-          className="w-full h-48 bg-surface/50 rounded-xl p-4 text-lg text-text placeholder-muted/30 resize-none transition-all focus:bg-surface focus:ring-1 focus:ring-primary/50"
-          disabled={status === 'submitting'}
-        />
-
-        {/* 按钮区域 */}
-        <div className="mt-8 flex justify-end">
-          <button
-            onClick={handleSubmit}
-            disabled={!content.trim() || status === 'submitting'}
-            className={`
-              flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-all duration-300
-              ${content.trim() 
-                ? 'bg-primary text-background shadow-[0_0_20px_rgba(56,189,248,0.3)] hover:shadow-[0_0_30px_rgba(56,189,248,0.5)] translate-y-0 opacity-100' 
-                : 'bg-surface text-muted translate-y-4 opacity-0 pointer-events-none'}
-            `}
+        {/* 顶部栏 */}
+        <div className="flex justify-between items-center text-stone-400 text-sm">
+          <span>{emailValue}</span>
+          <button 
+            onClick={() => {
+              localStorage.removeItem('fy_token')
+              setToken('')
+              setAuthStep('EMAIL')
+            }}
+            className="hover:text-stone-600 transition-colors"
           >
-            {status === 'submitting' ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                <span>记录中...</span>
-              </>
-            ) : (
-              <>
-                <span>交给 System</span>
-                <Send className="w-4 h-4" />
-              </>
-            )}
+            退出
           </button>
         </div>
-      </div>
 
-      {/* 底部版权 */}
-      <div className="text-center text-xs text-muted/20 pb-4">
-        v0.1 · Minimal MVP
+        {/* 录音状态波纹指示器 */}
+        {isRecording && (
+          <div className="absolute top-0 left-0 w-full h-1 bg-red-500 animate-pulse transition-all duration-300"></div>
+        )}
+
+        <textarea
+          placeholder={isRecording ? `正在倾听... (${recordingTime}s)` : "随便说点什么？比如：下周五提醒我给老王打个电话"}
+          className={`w-full h-40 resize-none p-4 bg-stone-50 text-stone-700 text-lg rounded-2xl border ${isRecording ? 'border-red-200 bg-red-50/30' : 'border-stone-100'} focus:outline-none focus:ring-2 focus:ring-stone-400 transition-all placeholder:text-stone-300`}
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          disabled={isSubmitting || isRecording}
+        />
+
+        {/* 反馈信息 */}
+        {feedbackMsg && (
+          <div className="text-sm text-stone-500 text-center animate-fade-in">
+            {feedbackMsg}
+          </div>
+        )}
+
+        {/* 操作区 */}
+        <div className="flex gap-4">
+          {/* 语音按钮 (支持桌面端鼠标按住，移动端手指按住) */}
+          <button
+            onMouseDown={startRecording}
+            onMouseUp={stopRecording}
+            onMouseLeave={stopRecording}
+            onTouchStart={startRecording}
+            onTouchEnd={stopRecording}
+            disabled={isSubmitting}
+            className={`flex-1 p-4 rounded-2xl font-medium text-lg transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2 ${
+              isRecording ? 'bg-red-500 text-white shadow-md' : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
+            }`}
+          >
+            {isRecording ? (
+              <>
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-white"></span>
+                </span>
+                松开发送 ({60 - recordingTime}s)
+              </>
+            ) : (
+              <>🎙️ 按住说话</>
+            )}
+          </button>
+
+          {/* 发送按钮 */}
+          <button
+            onClick={() => submitEvent()}
+            disabled={!inputValue.trim() || isSubmitting || isRecording}
+            className="flex-1 bg-stone-800 text-white p-4 rounded-2xl font-medium text-lg hover:bg-stone-700 transition-all active:scale-95 disabled:opacity-50"
+          >
+            {isSubmitting ? '飞鸽传书中...' : '发送'}
+          </button>
+        </div>
       </div>
     </div>
   )
