@@ -13,8 +13,8 @@ function App() {
     setStatus('submitting')
     
     try {
-      // 调用你的后端接口
-      await axios.post('/api/events/add', { content })
+      const baseUrl = import.meta.env.VITE_API_BASE_URL;
+      await axios.post(`${baseUrl}/events/add`, { content })
       
       setStatus('success')
       
