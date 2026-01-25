@@ -48,7 +48,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/auth/login?email=${encodeURIComponent(emailValue)}&code=${encodeURIComponent(codeValue)}`, { method: 'POST' })
       const data = await res.json()
-      if (data.code === 0) {
+      if (data.code === 200) {
         const jwt = data.data
         setToken(jwt)
         localStorage.setItem('fy_token', jwt)
@@ -122,7 +122,7 @@ function App() {
         body: formData
       })
       const data = await res.json()
-      if (data.code === 0) {
+      if (data.code ===  200) {
         const text = data.data
         setInputValue(text)
         // 自动提交事件
@@ -155,13 +155,13 @@ function App() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ 
-          rawInput: finalContent
+          content: finalContent
           // 注意：不需要传邮箱了，后端会从 Token 里取
         })
       })
 
       const data = await res.json()
-      if (data.code === 0) {
+      if (data.code === 200) {  
         setFeedbackMsg('✅ 已收录。不用再挂念它，去享受生活吧。')
         setInputValue('')
         setTimeout(() => setFeedbackMsg(''), 4000)
