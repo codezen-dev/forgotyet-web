@@ -16,12 +16,46 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [feedbackMsg, setFeedbackMsg] = useState('')
 
+  // V1：最近记忆列表
+  const [events, setEvents] = useState([])
+  const [eventsLoading, setEventsLoading] = useState(false)
+
+
   // 语音状态
   const [isRecording, setIsRecording] = useState(false)
   const [recordingTime, setRecordingTime] = useState(0)
   const mediaRecorderRef = useRef(null)
   const timerRef = useRef(null)
   const audioChunksRef = useRef([])
+
+  // ================= 1.5. Effects & Helpers =================
+  const fetchRecentEvents = async () => {
+    if (!token) return
+    setEventsLoading(true)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/event/list?limit=10`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const data = await res.json()
+      if (data.code === 200) {
+        setEvents(data.data || [])
+      } else {
+        console.warn(data.msg || 'fetch events failed')
+      }
+    } catch (e) {
+      console.warn('fetch events error', e)
+    } finally {
+      setEventsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (authStep === 'LOGGED_IN') {
+      fetchRecentEvents()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authStep])
 
   // ================= 2. 鉴权业务 (OTP登录) =================
   const handleSendCode = async () => {
@@ -41,6 +75,8 @@ function App() {
       setAuthLoading(false)
     }
   }
+
+
 
   const handleLogin = async () => {
     if (!codeValue) return
@@ -164,6 +200,7 @@ function App() {
       if (data.code === 200) {  
         setFeedbackMsg('✅ 已收录。不用再挂念它，去享受生活吧。')
         setInputValue('')
+        await fetchRecentEvents()
         setTimeout(() => setFeedbackMsg(''), 4000)
       } else {
         alert(data.msg)
@@ -174,6 +211,34 @@ function App() {
       setIsSubmitting(false)
     }
   }
+
+
+
+  const submitFeedback = async (eventId, feedback) => {
+    if (!eventId || !feedback) return
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/event/feedback`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ eventId, feedback })
+      })
+      const data = await res.json()
+      if (data.code === 200) {
+        // 乐观更新：直接改本地状态
+        setEvents(prev => prev.map(e => e.id === eventId ? { ...e, feedback } : e))
+        setFeedbackMsg('✅ 已记录反馈')
+        setTimeout(() => setFeedbackMsg(''), 1500)
+      } else {
+        alert(data.msg || '反馈失败')
+      }
+    } catch (e) {
+      alert('网络异常，反馈失败')
+    }
+  }
+
 
   // ================= 5. 渲染视图 =================
   
@@ -303,6 +368,91 @@ function App() {
             {isSubmitting ? '飞鸽传书中...' : '发送'}
           </button>
         </div>
+                {/* V1：最近记忆 */}
+        <div className="mt-2 pt-4 border-t border-stone-100">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-stone-500">最近记忆</div>
+            <button
+              onClick={fetchRecentEvents}
+              className="text-xs text-stone-400 hover:text-stone-600 transition-colors"
+              disabled={eventsLoading}
+            >
+              {eventsLoading ? '刷新中...' : '刷新'}
+            </button>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-3">
+            {eventsLoading && (
+               <div className="text-sm text-stone-400 py-8 text-center flex flex-col items-center gap-2">
+                 <div className="w-6 h-6 border-2 border-stone-200 border-t-stone-500 rounded-full animate-spin"></div>
+                 <span>读取记忆中...</span>
+               </div>
+            )}
+
+            {!eventsLoading && events.length === 0 && (
+              <div className="text-sm text-stone-400 py-4 text-center">
+                还没有记忆，先写一条吧。
+              </div>
+            )}
+
+            {!eventsLoading && events.map(ev => (
+              <div key={ev.id} className="bg-stone-50 rounded-2xl border border-stone-100 p-4">
+                <div className="text-stone-700 text-sm leading-relaxed whitespace-pre-wrap">
+                  {ev.rawInput}
+                </div>
+
+                <div className="mt-2 text-xs text-stone-400 flex flex-wrap gap-x-3 gap-y-1">
+                  <span>event: {new Date(ev.eventTime).toLocaleString()}</span>
+                  <span>trigger: {new Date(ev.triggerTime).toLocaleString()}</span>
+                  <span>status: {ev.status}</span>
+                  {ev.feedback && <span>feedback: {ev.feedback}</span>}
+                </div>
+
+                {ev.status === 'DELIVERED' && (
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      onClick={() => submitFeedback(ev.id, 'EARLY')}
+                      className={`px-3 py-2 rounded-xl text-sm transition-all border ${
+                        ev.feedback === 'EARLY'
+                          ? 'bg-stone-800 text-white border-stone-800'
+                          : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-100'
+                      }`}
+                    >
+                      早了
+                    </button>
+                    <button
+                      onClick={() => submitFeedback(ev.id, 'GOOD')}
+                      className={`px-3 py-2 rounded-xl text-sm transition-all border ${
+                        ev.feedback === 'GOOD'
+                          ? 'bg-stone-800 text-white border-stone-800'
+                          : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-100'
+                      }`}
+                    >
+                      刚好
+                    </button>
+                    <button
+                      onClick={() => submitFeedback(ev.id, 'LATE')}
+                      className={`px-3 py-2 rounded-xl text-sm transition-all border ${
+                        ev.feedback === 'LATE'
+                          ? 'bg-stone-800 text-white border-stone-800'
+                          : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-100'
+                      }`}
+                    >
+                      晚了
+                    </button>
+                  </div>
+                )}
+
+                {ev.triggerReason && (
+                  <div className="mt-2 text-[11px] text-stone-400 bg-stone-100/50 p-2 rounded-lg border border-stone-100/50">
+                    💡 触发原因: {ev.triggerReason}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
       </div>
     </div>
   )
