@@ -47,6 +47,24 @@ function App() {
   const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
   const isValidPhone = (phone) => /^1[3-9]\d{9}$/.test(phone)
 
+  const formatLead = (eventTimeStr, triggerTimeStr) => {
+  if (!eventTimeStr || !triggerTimeStr) return ''
+  const e = new Date(eventTimeStr).getTime()
+  const t = new Date(triggerTimeStr).getTime()
+  if (Number.isNaN(e) || Number.isNaN(t)) return ''
+  const diffMs = e - t
+  if (diffMs <= 0) return 'lead≤0（检查）'
+
+  const mins = Math.round(diffMs / 60000)
+  if (mins < 60) return `提前${mins}分钟`
+  const hours = Math.round(mins / 60)
+  if (hours < 48) return `提前${hours}小时`
+  const days = Math.round(hours / 24)
+  return `提前${days}天`
+}
+
+const safeText = (v) => (v === null || v === undefined || v === '') ? '' : String(v)
+
   const fetchRecentEvents = async (isBackground = false) => {
     if (!token) return []
     // 如果是后台静默刷新，就不显示 loading 状态，避免界面闪烁
@@ -332,39 +350,38 @@ function App() {
     }
   }
   const refreshAfterSubmit = async (rawInput) => {
-    // 立即静默查一次
-    await fetchRecentEvents(true)
+  await fetchRecentEvents(true)
 
-    let tries = 0
-    const maxTries = 10 
-    
-    // 智能轮询：每 1.5 秒查一次，直到发现新数据或超时
-    // 这样既能及时刷出结果，又不会一直傻傻地刷
-    const timer = setInterval(async () => {
-      tries++
-      if (tries > maxTries) {
-        clearInterval(timer)
-        return
-      }
+  let tries = 0
+  const maxTries = 10
 
-      // 静默刷新
-      const latestList = await fetchRecentEvents(true)
-      
-      // 检查是否已经包含了刚才提交的内容
-      const found = latestList && latestList.some(e => 
-        e.content === rawInput || 
-        e.rawInput === rawInput || 
-        (e.rawInput && e.rawInput.includes(rawInput))
-      )
-      
-      if (found) {
-        // console.log('Found new event, stop polling.')
-        clearInterval(timer)
-      }
-    }, 1500)
-  }
+  const timer = setInterval(async () => {
+    tries++
+    if (tries > maxTries) {
+      clearInterval(timer)
+      return
+    }
 
+    const latestList = await fetchRecentEvents(true)
 
+    const hit = latestList && latestList.find(e =>
+      e.content === rawInput ||
+      e.rawInput === rawInput ||
+      (e.rawInput && e.rawInput.includes(rawInput))
+    )
+
+    if (hit) {
+      clearInterval(timer)
+
+      const lead = formatLead(hit.eventTime, hit.triggerTime)
+      const bucket = safeText(hit.triggerBucket)
+      const intent = safeText(hit.triggerIntent)
+      const cpx = safeText(hit.complexity)
+
+      showToast(`已生成计划：${lead}${bucket ? ` · ${bucket}` : ''}${intent ? ` · ${intent}` : ''}${cpx ? ` · ${cpx}` : ''}`)
+    }
+  }, 1500)
+}
 
   const submitFeedback = async (eventId, feedback) => {
     if (!eventId || !feedback) return
@@ -705,14 +722,39 @@ function App() {
                   {ev.rawInput}
                 </div>
 
-                <div className="mt-2 text-xs text-stone-400 flex flex-wrap gap-x-3 gap-y-1">
-                  <span>event: {new Date(ev.eventTime).toLocaleString()}</span>
-                  <span>trigger: {new Date(ev.triggerTime).toLocaleString()}</span>
-                  <span>status: {ev.status}</span>
-                  {ev.feedback && <span>feedback: {ev.feedback}</span>}
-                </div>
+                <div className="mt-2 text-xs text-stone-400 flex flex-wrap gap-x-3 gap-y-1 items-center">
+                <span>event: {new Date(ev.eventTime).toLocaleString()}</span>
+                <span>trigger: {new Date(ev.triggerTime).toLocaleString()}</span>
+                <span className="font-medium text-stone-500">
+                  {formatLead(ev.eventTime, ev.triggerTime)}
+                </span>
+                <span>status: {ev.status}</span>
+                {ev.feedback && <span>feedback: {ev.feedback}</span>}
+              </div>
 
-
+              {/* ✅ 策略 badges（后端没返回也不会显示） */}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {ev.triggerBucket && (
+                  <span className="text-[11px] px-2 py-1 rounded-full bg-white border border-stone-200 text-stone-600">
+                    bucket: {ev.triggerBucket}
+                  </span>
+                )}
+                {ev.triggerIntent && (
+                  <span className="text-[11px] px-2 py-1 rounded-full bg-white border border-stone-200 text-stone-600">
+                    intent: {ev.triggerIntent}
+                  </span>
+                )}
+                {ev.complexity && (
+                  <span className="text-[11px] px-2 py-1 rounded-full bg-white border border-stone-200 text-stone-600">
+                    complexity: {ev.complexity}
+                  </span>
+                )}
+                {ev.prepRequired !== null && ev.prepRequired !== undefined && (
+                  <span className="text-[11px] px-2 py-1 rounded-full bg-white border border-stone-200 text-stone-600">
+                    prep: {String(ev.prepRequired)}
+                  </span>
+                )}
+              </div>
                 {ev.status === 'DELIVERED' && (
                   <div className="mt-3 flex gap-2">
                     <button
