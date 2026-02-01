@@ -5,11 +5,26 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 function App() {
   // ================= 1. 状态管理 =================
   // 鉴权状态
-  const [token, setToken] = useState(localStorage.getItem('fy_token') || '')
-  const [authStep, setAuthStep] = useState(token ? 'LOGGED_IN' : 'EMAIL') // EMAIL, CODE, LOGGED_IN
+    const [token, setToken] = useState(localStorage.getItem('fy_token') || '')
+
+  // 登录模式：EMAIL / SMS
+  const [loginMode, setLoginMode] = useState(localStorage.getItem('fy_login_mode') || 'EMAIL')
+
+  // authStep: EMAIL, CODE, PHONE, SMS_CODE, LOGGED_IN
+  const [authStep, setAuthStep] = useState(token ? 'LOGGED_IN' : (loginMode === 'SMS' ? 'PHONE' : 'EMAIL'))
+
   const [emailValue, setEmailValue] = useState(localStorage.getItem('fy_email') || '')
   const [codeValue, setCodeValue] = useState('')
+
+  // SMS 登录新增
+  const [phoneValue, setPhoneValue] = useState(localStorage.getItem('fy_phone') || '')
+  const [smsCodeValue, setSmsCodeValue] = useState('')
+
+  // 短信登录阶段要求绑定邮箱（后端 sms/login 需要 email）
+  const [bindEmailValue, setBindEmailValue] = useState(localStorage.getItem('fy_email') || '')
+
   const [authLoading, setAuthLoading] = useState(false)
+
 
   // 业务状态
   const [inputValue, setInputValue] = useState('')
@@ -29,6 +44,9 @@ function App() {
   const audioChunksRef = useRef([])
 
   // ================= 1.5. Effects & Helpers =================
+  const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  const isValidPhone = (phone) => /^1[3-9]\d{9}$/.test(phone)
+
   const fetchRecentEvents = async (isBackground = false) => {
     if (!token) return []
     // 如果是后台静默刷新，就不显示 loading 状态，避免界面闪烁
@@ -74,6 +92,39 @@ function App() {
 
   const [confirmingId, setConfirmingId] = useState(null)
 
+  // ================= Toast Notification =================
+  const [toast, setToast] = useState({ show: false, msg: '', type: 'info' })
+  const toastTimerRef = useRef(null)
+
+  const showToast = (msg, type = 'info') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setToast({ show: true, msg, type })
+    toastTimerRef.current = setTimeout(() => {
+      setToast(prev => ({ ...prev, show: false }))
+    }, 3000)
+  }
+
+  const Toast = () => (
+    <div 
+      onClick={() => setToast(prev => ({ ...prev, show: false }))}
+      className={`fixed top-6 left-1/2 -translate-x-1/2 z-[9999] px-6 py-3 rounded-full shadow-xl flex items-center gap-3 transition-all duration-300 transform cursor-pointer max-w-[90vw] whitespace-nowrap overflow-hidden text-ellipsis ${toast.show ? 'translate-y-0 opacity-100' : '-translate-y-4 opacity-0 pointer-events-none'} ${toast.type === 'error' ? 'bg-red-50 text-red-600 border border-red-100 ring-1 ring-red-100' : 'bg-stone-800 text-white shadow-stone-200'}`}
+      style={{ marginTop: 'env(safe-area-inset-top)' }}
+    >
+      <div className="shrink-0">
+        {toast.type === 'error' ? (
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
+          </svg>
+        ) : (
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
+          </svg>
+        )}
+      </div>
+      <span className="font-medium text-sm truncate">{toast.msg}</span>
+    </div>
+  )
+
   // ================= 2. 鉴权业务 (OTP登录) =================
   const handleSendCode = async () => {
     if (!emailValue) return
@@ -84,10 +135,10 @@ function App() {
         setAuthStep('CODE')
         localStorage.setItem('fy_email', emailValue)
       } else {
-        alert('发送失败，请稍后重试')
+        showToast('发送失败，请稍后重试', 'error')
       }
     } catch (err) {
-      alert('网络错误')
+      showToast('网络错误', 'error')
     } finally {
       setAuthLoading(false)
     }
@@ -107,14 +158,66 @@ function App() {
         localStorage.setItem('fy_token', jwt)
         setAuthStep('LOGGED_IN')
       } else {
-        alert(data.msg || '验证码错误')
+        showToast(data.msg || '验证码错误', 'error')
       }
     } catch (err) {
-      alert('登录失败')
+      showToast('登录失败', 'error')
     } finally {
       setAuthLoading(false)
     }
   }
+
+    const handleSendSmsCode = async () => {
+    if (!phoneValue) return
+    setAuthLoading(true)
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/auth/sms/send-code?phone=${encodeURIComponent(phoneValue)}`,
+        { method: 'POST' }
+      )
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && (data.code === 200 || data.msg === 'success' || data.success)) {
+        setAuthStep('SMS_CODE')
+        localStorage.setItem('fy_phone', phoneValue)
+      } else {
+        showToast(data.msg || '发送失败，请稍后重试', 'error')
+      }
+    } catch (err) {
+      showToast('网络错误', 'error')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const handleSmsLogin = async () => {
+    if (!phoneValue || !smsCodeValue || !bindEmailValue) return
+    setAuthLoading(true)
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/auth/sms/login?phone=${encodeURIComponent(phoneValue)}&code=${encodeURIComponent(smsCodeValue)}&email=${encodeURIComponent(bindEmailValue)}`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      if (data.code === 200) {
+        const jwt = data.data
+        setToken(jwt)
+        localStorage.setItem('fy_token', jwt)
+
+        // ✅ 登录后顶部展示邮箱（而不是手机号）
+        setEmailValue(bindEmailValue)
+        localStorage.setItem('fy_email', bindEmailValue)
+
+        setAuthStep('LOGGED_IN')
+      } else {
+        showToast(data.msg || '验证码错误', 'error')
+      }
+    } catch (err) {
+      showToast('登录失败', 'error')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
 
   // ================= 3. 语音引擎 (录音与转录) =================
   const startRecording = async () => {
@@ -149,7 +252,7 @@ function App() {
       }, 1000)
 
     } catch (err) {
-      alert('无法访问麦克风，请检查浏览器权限。')
+      showToast('无法访问麦克风，请检查浏览器权限。', 'error')
     }
   }
 
@@ -181,12 +284,12 @@ function App() {
         // 自动提交事件
         await submitEvent(text)
       } else {
-        alert(data.msg)
+        showToast(data.msg, 'error')
         setIsSubmitting(false)
         setFeedbackMsg('')
       }
     } catch (err) {
-      alert('语音识别失败')
+      showToast('语音识别失败', 'error')
       setIsSubmitting(false)
       setFeedbackMsg('')
     }
@@ -220,10 +323,10 @@ function App() {
         await refreshAfterSubmit(finalContent)
         setTimeout(() => setFeedbackMsg(''), 4000)
       } else {
-        alert(data.msg)
+        showToast(data.msg, 'error')
       }
     } catch (err) {
-      alert('网络异常，请重试')
+      showToast('网络异常，请重试', 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -281,10 +384,10 @@ function App() {
         setFeedbackMsg('✅ 已记录反馈')
         setTimeout(() => setFeedbackMsg(''), 1500)
       } else {
-        alert(data.msg || '反馈失败')
+        showToast(data.msg || '反馈失败', 'error')
       }
     } catch (e) {
-      alert('网络异常，反馈失败')
+      showToast('网络异常，反馈失败', 'error')
     }
   }
   const cancelEvent = async (eventId) => {
@@ -309,10 +412,10 @@ function App() {
         setFeedbackMsg('✅ 已取消')
         setTimeout(() => setFeedbackMsg(''), 1500)
       } else {
-        alert(data.msg || '取消失败')
+        showToast(data.msg || '取消失败', 'error')
       }
     } catch (e) {
-      alert('网络异常，取消失败')
+      showToast('网络异常，取消失败', 'error')
     } finally {
       setConfirmingId(null)
     }
@@ -326,47 +429,165 @@ function App() {
   if (authStep !== 'LOGGED_IN') {
     return (
       <div className="min-h-screen bg-stone-50 flex items-center justify-center p-4 selection:bg-stone-200">
+        <Toast />
         <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-sm border border-stone-100 flex flex-col gap-6">
           <div className="text-center">
             <h1 className="text-2xl font-medium text-stone-800 tracking-tight">ForgotYet</h1>
             <p className="text-sm text-stone-400 mt-1">给未来的自己留个言</p>
           </div>
 
-          {authStep === 'EMAIL' ? (
+          {/* 登录模式切换 Tab */}
+          <div className="flex border-b border-stone-100">
+            <button
+              className={`flex-1 pb-3 text-sm font-medium transition-all ${loginMode === 'EMAIL' ? 'text-stone-800 border-b-2 border-stone-800' : 'text-stone-400 hover:text-stone-600'}`}
+              onClick={() => {
+                setLoginMode('EMAIL')
+                setAuthStep('EMAIL')
+                localStorage.setItem('fy_login_mode', 'EMAIL')
+              }}
+            >
+              邮箱登录
+            </button>
+            <button
+              className={`flex-1 pb-3 text-sm font-medium transition-all ${loginMode === 'SMS' ? 'text-stone-800 border-b-2 border-stone-800' : 'text-stone-400 hover:text-stone-600'}`}
+              onClick={() => {
+                setLoginMode('SMS')
+                setAuthStep('PHONE')
+                localStorage.setItem('fy_login_mode', 'SMS')
+              }}
+            >
+              手机验证
+            </button>
+          </div>
+
+          {/* 邮箱登录模式 */}
+          {loginMode === 'EMAIL' && (
             <>
-              <input
-                type="email"
-                placeholder="输入你的邮箱"
-                className="w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-stone-400 transition-all placeholder:text-stone-300"
-                value={emailValue}
-                onChange={(e) => setEmailValue(e.target.value)}
-              />
-              <button
-                onClick={handleSendCode}
-                disabled={authLoading || !emailValue}
-                className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50"
-              >
-                {authLoading ? '发送中...' : '发送验证码'}
-              </button>
-            </>
-          ) : (
-            <>
-              <input
-                type="text"
-                placeholder="输入 4 位验证码"
-                className="w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-stone-400 transition-all text-center tracking-widest"
-                value={codeValue}
-                onChange={(e) => setCodeValue(e.target.value)}
-              />
-              <button
-                onClick={handleLogin}
-                disabled={authLoading || !codeValue}
-                className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50"
-              >
-                {authLoading ? '登录中...' : '进入'}
-              </button>
+              {authStep === 'EMAIL' ? (
+                <div className="flex flex-col gap-4 animate-fade-in">
+                  <div className="flex flex-col gap-1">
+                    <input
+                      type="email"
+                      placeholder="输入你的邮箱"
+                      className={`w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border ${emailValue && !isValidEmail(emailValue) ? 'border-red-300 focus:ring-red-400' : 'border-stone-200 focus:ring-stone-400'} focus:outline-none focus:ring-2 transition-all placeholder:text-stone-300`}
+                      value={emailValue}
+                      onChange={(e) => setEmailValue(e.target.value)}
+                    />
+                    {emailValue && !isValidEmail(emailValue) && (
+                      <span className="text-xs text-red-500 px-1">请输入正确的邮箱格式</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleSendCode}
+                    disabled={authLoading || !emailValue || !isValidEmail(emailValue)}
+                    className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50 disabled:hover:bg-stone-800"
+                  >
+                    {authLoading ? '发送中...' : '发送验证码'}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-4 animate-fade-in">
+                  <div className="flex items-center justify-between text-sm text-stone-500 px-1">
+                    <span>验证码已发送至 {emailValue}</span>
+                    <button 
+                      onClick={() => setAuthStep('EMAIL')}
+                      className="text-stone-400 hover:text-stone-600 underline"
+                    >
+                      修改邮箱
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="输入 4 位验证码"
+                    className="w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-stone-400 transition-all text-center tracking-widest"
+                    value={codeValue}
+                    onChange={(e) => setCodeValue(e.target.value)}
+                  />
+                  <button
+                    onClick={handleLogin}
+                    disabled={authLoading || !codeValue}
+                    className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50"
+                  >
+                    {authLoading ? '登录中...' : '进入'}
+                  </button>
+                </div>
+              )}
             </>
           )}
+
+          {/* 手机登录模式 */}
+          {loginMode === 'SMS' && (
+            <>
+              {authStep === 'PHONE' ? (
+                <div className="flex flex-col gap-4 animate-fade-in">
+                  <div className="flex flex-col gap-1">
+                    <input
+                      type="tel"
+                      placeholder="输入你的手机号"
+                      className={`w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border ${phoneValue && !isValidPhone(phoneValue) ? 'border-red-300 focus:ring-red-400' : 'border-stone-200 focus:ring-stone-400'} focus:outline-none focus:ring-2 transition-all placeholder:text-stone-300`}
+                      value={phoneValue}
+                      onChange={(e) => setPhoneValue(e.target.value)}
+                    />
+                    {phoneValue && !isValidPhone(phoneValue) && (
+                      <span className="text-xs text-red-500 px-1">请输入正确的手机号格式</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleSendSmsCode}
+                    disabled={authLoading || !phoneValue || !isValidPhone(phoneValue)}
+                    className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50 disabled:hover:bg-stone-800"
+                  >
+                    {authLoading ? '发送中...' : '发送验证码'}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-4 animate-fade-in">
+                  <div className="flex items-center justify-between text-sm text-stone-500 px-1">
+                    <span>验证码已发送至 {phoneValue}</span>
+                    <button 
+                      onClick={() => setAuthStep('PHONE')}
+                      className="text-stone-400 hover:text-stone-600 underline"
+                    >
+                      修改手机号
+                    </button>
+                  </div>
+                  
+                  <input
+                    type="text"
+                    placeholder="输入短信验证码"
+                    className="w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-stone-400 transition-all text-center tracking-widest"
+                    value={smsCodeValue}
+                    onChange={(e) => setSmsCodeValue(e.target.value)}
+                  />
+                  
+                  {/* SMS 登录强制绑定邮箱 */}
+                  <div className="flex flex-col gap-1">
+                    <input
+                      type="email"
+                      placeholder="绑定邮箱 (必填)"
+                      className={`w-full p-4 bg-stone-50 text-stone-700 text-lg rounded-xl border ${bindEmailValue && !isValidEmail(bindEmailValue) ? 'border-red-300 focus:ring-red-400' : 'border-stone-200 focus:ring-stone-400'} focus:outline-none focus:ring-2 transition-all placeholder:text-stone-300`}
+                      value={bindEmailValue}
+                      onChange={(e) => setBindEmailValue(e.target.value)}
+                    />
+                    {bindEmailValue && !isValidEmail(bindEmailValue) ? (
+                      <span className="text-xs text-red-500 px-1">请输入正确的邮箱格式</span>
+                    ) : (
+                      <span className="text-xs text-stone-400 px-1">我们需要邮箱来确保你能收到重要提醒</span>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={handleSmsLogin}
+                    disabled={authLoading || !smsCodeValue || !bindEmailValue || !isValidEmail(bindEmailValue)}
+                    className="w-full bg-stone-800 text-white p-4 rounded-xl font-medium text-lg hover:bg-stone-700 transition-all disabled:opacity-50 disabled:hover:bg-stone-800"
+                  >
+                    {authLoading ? '验证并登录...' : '进入'}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
         </div>
       </div>
     )
@@ -375,6 +596,7 @@ function App() {
   // 视图B：已登录主界面
   return (
     <div className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-4 selection:bg-stone-200">
+      <Toast />
       <div className="w-full max-w-xl bg-white p-8 rounded-3xl shadow-sm border border-stone-100 flex flex-col gap-6 relative overflow-hidden transition-all duration-300">
         
         {/* 顶部栏 */}
@@ -383,7 +605,9 @@ function App() {
           <button 
             onClick={() => {
               localStorage.removeItem('fy_token')
+              localStorage.removeItem('fy_login_mode')
               setToken('')
+              setLoginMode('EMAIL')
               setAuthStep('EMAIL')
             }}
             className="hover:text-stone-600 transition-colors"
