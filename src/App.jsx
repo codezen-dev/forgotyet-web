@@ -29,33 +29,50 @@ function App() {
   const audioChunksRef = useRef([])
 
   // ================= 1.5. Effects & Helpers =================
-  const fetchRecentEvents = async () => {
-    if (!token) return
-    setEventsLoading(true)
+  const fetchRecentEvents = async (isBackground = false) => {
+    if (!token) return []
+    // 如果是后台静默刷新，就不显示 loading 状态，避免界面闪烁
+    if (!isBackground) setEventsLoading(true)
+    
     try {
-      const res = await fetch(`${API_BASE_URL}/api/event/list?limit=10`, {
+      // 加个时间戳防止缓存
+      const res = await fetch(`${API_BASE_URL}/api/event/list?limit=10&_t=${Date.now()}`, {
         method: 'GET',
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
       if (data.code === 200) {
-        setEvents(data.data || [])
+        const list = data.data || []
+        setEvents(list)
+        return list // 返回数据供调用方判断
       } else {
         console.warn(data.msg || 'fetch events failed')
       }
     } catch (e) {
       console.warn('fetch events error', e)
     } finally {
-      setEventsLoading(false)
+      if (!isBackground) setEventsLoading(false)
     }
+    return []
   }
 
   useEffect(() => {
     if (authStep === 'LOGGED_IN') {
       fetchRecentEvents()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authStep])
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && authStep === 'LOGGED_IN') {
+        fetchRecentEvents()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [authStep])
+
+
+  const [confirmingId, setConfirmingId] = useState(null)
 
   // ================= 2. 鉴权业务 (OTP登录) =================
   const handleSendCode = async () => {
@@ -200,7 +217,7 @@ function App() {
       if (data.code === 200) {  
         setFeedbackMsg('✅ 已收录。不用再挂念它，去享受生活吧。')
         setInputValue('')
-        await fetchRecentEvents()
+        await refreshAfterSubmit(finalContent)
         setTimeout(() => setFeedbackMsg(''), 4000)
       } else {
         alert(data.msg)
@@ -210,6 +227,38 @@ function App() {
     } finally {
       setIsSubmitting(false)
     }
+  }
+  const refreshAfterSubmit = async (rawInput) => {
+    // 立即静默查一次
+    await fetchRecentEvents(true)
+
+    let tries = 0
+    const maxTries = 10 
+    
+    // 智能轮询：每 1.5 秒查一次，直到发现新数据或超时
+    // 这样既能及时刷出结果，又不会一直傻傻地刷
+    const timer = setInterval(async () => {
+      tries++
+      if (tries > maxTries) {
+        clearInterval(timer)
+        return
+      }
+
+      // 静默刷新
+      const latestList = await fetchRecentEvents(true)
+      
+      // 检查是否已经包含了刚才提交的内容
+      const found = latestList && latestList.some(e => 
+        e.content === rawInput || 
+        e.rawInput === rawInput || 
+        (e.rawInput && e.rawInput.includes(rawInput))
+      )
+      
+      if (found) {
+        // console.log('Found new event, stop polling.')
+        clearInterval(timer)
+      }
+    }, 1500)
   }
 
 
@@ -238,6 +287,37 @@ function App() {
       alert('网络异常，反馈失败')
     }
   }
+  const cancelEvent = async (eventId) => {
+    if (!eventId) return
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/event/${eventId}/cancel`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      })
+      const data = await res.json()
+
+      if (data.code === 200) {
+        // 乐观更新：本地立刻标记取消
+        setEvents(prev =>
+          prev.map(e =>
+            e.id === eventId ? { ...e, status: 'CANCELED' } : e
+          )
+        )
+        setFeedbackMsg('✅ 已取消')
+        setTimeout(() => setFeedbackMsg(''), 1500)
+      } else {
+        alert(data.msg || '取消失败')
+      }
+    } catch (e) {
+      alert('网络异常，取消失败')
+    } finally {
+      setConfirmingId(null)
+    }
+  }
+
 
 
   // ================= 5. 渲染视图 =================
@@ -368,7 +448,7 @@ function App() {
             {isSubmitting ? '飞鸽传书中...' : '发送'}
           </button>
         </div>
-                {/* V1：最近记忆 */}
+        {/* V1：最近记忆 */}
         <div className="mt-2 pt-4 border-t border-stone-100">
           <div className="flex items-center justify-between">
             <div className="text-sm text-stone-500">最近记忆</div>
@@ -381,7 +461,7 @@ function App() {
             </button>
           </div>
 
-          <div className="mt-3 flex flex-col gap-3">
+          <div className="mt-3 flex flex-col gap-3 max-h-[55vh] overflow-y-auto pr-1">
             {eventsLoading && (
                <div className="text-sm text-stone-400 py-8 text-center flex flex-col items-center gap-2">
                  <div className="w-6 h-6 border-2 border-stone-200 border-t-stone-500 rounded-full animate-spin"></div>
@@ -407,6 +487,7 @@ function App() {
                   <span>status: {ev.status}</span>
                   {ev.feedback && <span>feedback: {ev.feedback}</span>}
                 </div>
+
 
                 {ev.status === 'DELIVERED' && (
                   <div className="mt-3 flex gap-2">
@@ -440,6 +521,43 @@ function App() {
                     >
                       晚了
                     </button>
+                  </div>
+                )}
+                {ev.status === 'SILENT' && (
+                  <div className="mt-3 flex justify-end">
+                    {confirmingId === ev.id ? (
+                      <div className="flex items-center gap-2 bg-red-50 px-3 py-1.5 rounded-lg animate-fade-in">
+                        <span className="text-xs text-red-600">确定取消？</span>
+                        <button
+                          onClick={() => cancelEvent(ev.id)}
+                          className="text-xs text-white bg-red-500 hover:bg-red-600 px-2 py-0.5 rounded transition-colors"
+                        >
+                          是
+                        </button>
+                        <button
+                          onClick={() => setConfirmingId(null)}
+                          className="text-xs text-stone-500 hover:text-stone-700 px-2 py-0.5"
+                        >
+                          否
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmingId(ev.id)}
+                        className="text-xs text-stone-400 hover:text-red-500 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 group"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 group-hover:scale-110 transition-transform">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
+                        </svg>
+                        取消提醒
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {ev.status === 'CANCELED' && (
+                  <div className="mt-3 text-sm text-stone-400">
+                    已取消
                   </div>
                 )}
 
