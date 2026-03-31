@@ -43,6 +43,23 @@ function App() {
   const timerRef = useRef(null)
   const audioChunksRef = useRef([])
 
+  // 判断这句话更像“补时间句”（而不是新事项）
+  const looksLikeTimeOnly = (s) => {
+    if (!s) return false
+    const t = s.trim()
+    // 很短且是时间表达，基本可以认为是补时间
+    // 覆盖：明天/后天/下周一/下午3点/14:30/5分钟后/一小时后 等
+    return /(\d+\s*(分钟|分|min|minute|小时|h|hour|天|日|周|星期|月))|(\d{1,2}\s*(点|点钟))|(\d{1,2}[:：]\d{2})|(今天|明天|后天|大后天|下周|下星期|下个月|周[一二三四五六日天]|星期[一二三四五六日天]|上午|早上|中午|下午|晚上|夜里|夜晚|稍后|一会|一会儿)/.test(t)
+  }
+
+  // 帮你定位 resolve 是否 404/401 等（避免“悄悄失败又创建了新事项”）
+  const logResolveResult = async (res, data) => {
+    try {
+      console.log('[resolve-pending] httpStatus=', res.status, 'ok=', res.ok, 'payload=', data)
+    } catch (e) {}
+  }
+
+
   // ================= 1.5. Effects & Helpers =================
   const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
   const isValidPhone = (phone) => /^1[3-9]\d{9}$/.test(phone)
@@ -319,23 +336,61 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
     if (!finalContent.trim()) return
 
     setIsSubmitting(true)
-    setFeedbackMsg('✨ 正在为您生成专属时间胶囊...')
 
     try {
+      const hasPending = events?.some(e => e.status === 'PENDING')
+
+      // ✅ 只有“存在 pending”且“这句话像补时间”才尝试 resolve，避免串线
+      const shouldTryResolve = hasPending && looksLikeTimeOnly(finalContent)
+
+      if (shouldTryResolve) {
+        setFeedbackMsg('🤔 正在尝试补全待定事项...')
+        const res = await fetch(`${API_BASE_URL}/api/event/resolve-pending`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ content: finalContent }),
+        })
+
+        const data = await res.json()
+        await logResolveResult(res, data) // ✅ 打印 status，排查 404/401
+
+        // ✅ 更严格成功判定（你说你已做过，这里给一个稳的参考）
+        const ok = (res.ok && (data?.code === 200 || data?.success === true))
+        if (ok) {
+          setFeedbackMsg('✅ 已补全待定事项')
+          showToast(typeof data.data === 'string' ? data.data : (data.msg || '已补全待定事项'))
+          setInputValue('')
+          await fetchRecentEvents()
+          setTimeout(() => setFeedbackMsg(''), 3000)
+          return
+        } else {
+          // ✅ resolve 失败给个提示（你说你也做了）
+          const msg = data?.msg || '补全失败，将按新事项创建'
+          showToast(msg, 'warning')
+          // 继续 fallback add
+        }
+      } else if (hasPending) {
+        // 可选：存在 pending 但输入不像补时间 → 提醒用户“可以补时间”
+        // 不影响创建新事项，只是“秘书提示”
+        // showToast('我这边还有一个待定事项，你也可以直接补一个时间，比如：明天下午3点', 'info')
+      }
+
+      // 2) fallback：正常 add
+      setFeedbackMsg('✨ 正在为您生成专属时间胶囊...')
       const res = await fetch(`${API_BASE_URL}/api/event/add`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ 
-          content: finalContent
-          // 注意：不需要传邮箱了，后端会从 Token 里取
-        })
+        body: JSON.stringify({ content: finalContent })
       })
 
       const data = await res.json()
-      if (data.code === 200) {  
+      if (data.code === 200) {
         setFeedbackMsg('✅ 已收录。不用再挂念它，去享受生活吧。')
         setInputValue('')
         await refreshAfterSubmit(finalContent)
@@ -349,6 +404,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       setIsSubmitting(false)
     }
   }
+
   const refreshAfterSubmit = async (rawInput) => {
   await fetchRecentEvents(true)
 
@@ -723,8 +779,8 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
                 </div>
 
                 <div className="mt-2 text-xs text-stone-400 flex flex-wrap gap-x-3 gap-y-1 items-center">
-                <span>event: {new Date(ev.eventTime).toLocaleString()}</span>
-                <span>trigger: {new Date(ev.triggerTime).toLocaleString()}</span>
+                {ev.eventTime && <span>event: {new Date(ev.eventTime).toLocaleString()}</span>}
+                {ev.triggerTime && <span>trigger: {new Date(ev.triggerTime).toLocaleString()}</span>}
                 <span className="font-medium text-stone-500">
                   {formatLead(ev.eventTime, ev.triggerTime)}
                 </span>
