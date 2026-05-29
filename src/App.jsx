@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -56,7 +56,9 @@ function App() {
   const logResolveResult = async (res, data) => {
     try {
       console.log('[resolve-pending] httpStatus=', res.status, 'ok=', res.ok, 'payload=', data)
-    } catch (e) {}
+    } catch {
+      return
+    }
   }
 
 
@@ -82,7 +84,7 @@ function App() {
 
 const safeText = (v) => (v === null || v === undefined || v === '') ? '' : String(v)
 
-  const fetchRecentEvents = async (isBackground = false) => {
+  const fetchRecentEvents = useCallback(async (isBackground = false) => {
     if (!token) return []
     // 如果是后台静默刷新，就不显示 loading 状态，避免界面闪烁
     if (!isBackground) setEventsLoading(true)
@@ -107,13 +109,13 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       if (!isBackground) setEventsLoading(false)
     }
     return []
-  }
+  }, [token])
 
   useEffect(() => {
     if (authStep === 'LOGGED_IN') {
       fetchRecentEvents()
     }
-  }, [authStep])
+  }, [authStep, fetchRecentEvents])
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === 'visible' && authStep === 'LOGGED_IN') {
@@ -122,7 +124,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [authStep])
+  }, [authStep, fetchRecentEvents])
 
 
   const [confirmingId, setConfirmingId] = useState(null)
@@ -172,7 +174,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       } else {
         showToast('发送失败，请稍后重试', 'error')
       }
-    } catch (err) {
+    } catch {
       showToast('网络错误', 'error')
     } finally {
       setAuthLoading(false)
@@ -195,7 +197,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       } else {
         showToast(data.msg || '验证码错误', 'error')
       }
-    } catch (err) {
+    } catch {
       showToast('登录失败', 'error')
     } finally {
       setAuthLoading(false)
@@ -217,7 +219,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       } else {
         showToast(data.msg || '发送失败，请稍后重试', 'error')
       }
-    } catch (err) {
+    } catch {
       showToast('网络错误', 'error')
     } finally {
       setAuthLoading(false)
@@ -246,7 +248,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       } else {
         showToast(data.msg || '验证码错误', 'error')
       }
-    } catch (err) {
+    } catch {
       showToast('登录失败', 'error')
     } finally {
       setAuthLoading(false)
@@ -286,7 +288,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
         })
       }, 1000)
 
-    } catch (err) {
+    } catch {
       showToast('无法访问麦克风，请检查浏览器权限。', 'error')
     }
   }
@@ -323,7 +325,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
         setIsSubmitting(false)
         setFeedbackMsg('')
       }
-    } catch (err) {
+    } catch {
       showToast('语音识别失败', 'error')
       setIsSubmitting(false)
       setFeedbackMsg('')
@@ -398,7 +400,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       } else {
         showToast(data.msg, 'error')
       }
-    } catch (err) {
+    } catch {
       showToast('网络异常，请重试', 'error')
     } finally {
       setIsSubmitting(false)
@@ -459,7 +461,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       } else {
         showToast(data.msg || '反馈失败', 'error')
       }
-    } catch (e) {
+    } catch {
       showToast('网络异常，反馈失败', 'error')
     }
   }
@@ -487,7 +489,7 @@ const safeText = (v) => (v === null || v === undefined || v === '') ? '' : Strin
       } else {
         showToast(data.msg || '取消失败', 'error')
       }
-    } catch (e) {
+    } catch {
       showToast('网络异常，取消失败', 'error')
     } finally {
       setConfirmingId(null)
